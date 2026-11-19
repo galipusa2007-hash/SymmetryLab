@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#23334a}
+*{box-sizing:border-box}body{margin:0;background:#f7fbff}
+#shell{height:100vh;min-height:600px;border-radius:16px;border:1px solid #d7e8f6;overflow:hidden;display:flex;flex-direction:column;background:#ffffff}
+#top{height:53px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #dfedf7}
+#top strong{font-size:14px;margin-right:auto}
+button{border:1px solid #dbe3ed;background:#ffffff;border-radius:9px;min-width:38px;height:34px;padding:0 10px;color:#273f59;cursor:pointer;font-size:13px}
+button:hover{background:#eef5ff}button:focus-visible{outline:2px solid #468bea;outline-offset:2px}
+#plot{flex:1;min-height:0;width:100%}
+#bottom{min-height:87px;flex-shrink:0;padding:10px 16px;border-top:1px solid #dfedf7;background:#ffffff}
+#progress-row{display:flex;align-items:center;gap:12px;font-size:13px}
+input[type=range]{flex:1;accent-color:#327bc7;cursor:pointer}
+#progress-value{font-variant-numeric:tabular-nums;min-width:37px;text-align:right}
+#caption{font-size:12px;color:#53677d;margin-top:7px;min-height:14px}
+#toggles{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap;font-size:12px;color:#50617a}
+#toggles label{display:flex;align-items:center;gap:6px;cursor:pointer}input[type=checkbox]{accent-color:#3674c9}
+#fixed{display:none;font-size:13px;color:#54667b;padding:6px 0}
+#message{position:absolute;inset:60px 10px 110px;display:none;align-items:center;justify-content:center;text-align:center;background:#ffffff;z-index:2;color:#93412d;font-size:13px;padding:20px}
+#shell:fullscreen{border-radius:0}#shell:fullscreen #plot{min-height:0}
+</style></head><body>
+<div id="shell">
+ <div id="top"><strong>3D-модель · <span id="operation"></span></strong>
+  <button id="zoom-in" title="Увеличить всю молекулу" aria-label="Увеличить">🔍 +</button>
+  <button id="zoom-out" title="Уменьшить всю молекулу" aria-label="Уменьшить">🔍 −</button>
+  <button id="reset" title="Вернуть исходный ракурс" aria-label="Сбросить положение">↺ Ракурс</button>
+  <button id="fullscreen" title="На весь экран" aria-label="Во весь экран">⛶ Во весь экран</button>
+ </div>
+ <div id="plot"></div>
+ <div id="message">Не удалось загрузить модуль 3D-визуализации. Проверь подключение к интернету.</div>
+ <div id="bottom">
+  <div id="progress-row"><label for="progress">Ход преобразования</label><input id="progress" type="range" min="0" max="100" value="100" step="1"/><span id="progress-value">100%</span></div>
+  <div id="fixed">Все атомы сохраняют свои координаты при этой операции.</div>
+  <div id="caption"></div>
+  <div id="toggles"><label id="element-label"><input id="element" type="checkbox" checked/>Элемент симметрии</label><label><input id="ghost" type="checkbox"/>Исходная модель полупрозрачно</label></div>
+ </div>
+</div>
+<script>
+'use strict';
+const DATA=/*__SYMMETRY_DATA__*/null;
+const graph=document.getElementById('plot');
+const shell=document.getElementById('shell');
+const progress=document.getElementById('progress');
+const caption=document.getElementById('caption');
+const element=document.getElementById('element');
+const ghost=document.getElementById('ghost');
+document.getElementById('operation').textContent=DATA.operation.name;
+const original=DATA.original;
+const frames=DATA.frames;
+const colors=DATA.colors;
+// Visual sphere radii in angstroms; stylized, not physical covalent radii.
+const radii={Ti:.40,O:.35,C:.36,H:.24,B:.36,N:.39};
+const showMotion=DATA.hasMotion;
+if(!showMotion){document.getElementById('progress-row').style.display='none';document.getElementById('fixed').style.display='block';document.getElementById('toggles').style.display='none';}
+if(DATA.operation.kind==='identity'){document.getElementById('element-label').style.display='none';}
+let camera={eye:{x:1.65,y:1.65,z:1.22},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}};
+const defaultCamera=JSON.parse(JSON.stringify(camera));
+const vec=(a,b)=>a.map((v,i)=>v+b[i]);
+const sub=(a,b)=>a.map((v,i)=>v-b[i]);
+const mul=(a,s)=>a.map(v=>v*s);
+const norm=a=>Math.hypot(...a);
+const normalize=a=>mul(a,1/(norm(a)||1));
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+function sphere(center,radius){
+ const x=[],y=[],z=[],i=[],j=[],k=[];
+ const latitude=10,longitude=14;
+ for(let a=0;a<=latitude;a++){
+  const phi=Math.PI*a/latitude;
+  for(let b=0;b<=longitude;b++){
+   const t=2*Math.PI*b/longitude;
+   x.push(center[0]+radius*Math.sin(phi)*Math.cos(t));
+   y.push(center[1]+radius*Math.sin(phi)*Math.sin(t));
+   z.push(center[2]+radius*Math.cos(phi));
+  }
+ }
+ for(let a=0;a<latitude;a++)for(let b=0;b<longitude;b++){
+  const q=a*(longitude+1)+b,r=q+longitude+1;
+  i.push(q,q+1);j.push(r,r);k.push(q+1,r+1);
+ }
+ return {x,y,z,i,j,k};
+}
+function cylinder(a,b,radius){
+ const dir=normalize(sub(b,a));const helper=Math.abs(dir[2])<.85?[0,0,1]:[0,1,0];
+ const u=normalize(cross(dir,helper));const v=cross(dir,u);
+ const x=[],y=[],z=[],i=[],j=[],k=[],N=12;
+ for(const p of [a,b])for(let n=0;n<N;n++){
+  const t=n*2*Math.PI/N;const q=vec(p,vec(mul(u,radius*Math.cos(t)),mul(v,radius*Math.sin(t))));
+  x.push(q[0]);y.push(q[1]);z.push(q[2]);
+ }
+ for(let n=0;n<N;n++){
+  const m=(n+1)%N;
+  i.push(n,n);j.push(N+n,N+m);k.push(N+m,m);
+ }
+ return {x,y,z,i,j,k};
+}
+function mesh(g,color,opacity=1){return {type:'mesh3d',...g,color,opacity,flatshading:false,lighting:{ambient:.68,diffuse:.76,specular:.25,roughness:.63},hoverinfo:'skip',showscale:false,showlegend:false};}
+function createWorld(){
+ const traces=[];const L=DATA.limit*.91;
+ for(const [d,name,color] of [[0,'X','#b84f33'],[1,'Y','#087e77'],[2,'Z','#245bba']]){
+  const p=[0,0,0],q=[0,0,0];p[d]=-L;q[d]=L;
+  traces.push({type:'scatter3d',x:[p[0],q[0]],y:[p[1],q[1]],z:[p[2],q[2]],mode:'lines',line:{color,width:3},hoverinfo:'skip',showlegend:false});
+  traces.push({type:'scatter3d',x:[q[0]],y:[q[1]],z:[q[2]],mode:'text',text:[name],textfont:{size:13,color,family:"Arial, sans-serif"},hoverinfo:'skip',showlegend:false});
+ }
+ traces.push({type:'scatter3d',x:[0],y:[0],z:[0],mode:'markers',marker:{color:'#27394a',size:3},hoverinfo:'skip',showlegend:false});
+ return traces;
+}
+function makeElement(){
+ const op=DATA.operation,trace=[];
+ if((op.kind==='rotation'||op.kind==='improper')&&op.axis){
+  const a=normalize(op.axis),p=mul(a,-3),q=mul(a,3);
+  trace.push({type:'scatter3d',x:[p[0],q[0]],y:[p[1],q[1]],z:[p[2],q[2]],mode:'lines',line:{color:'#bb355b',width:4,dash:'dash'},hoverinfo:'skip',showlegend:false});
+ }
+ if((op.kind==='reflection'||op.kind==='improper')&&op.normal){
+  const n=normalize(op.normal),h=Math.abs(n[0])<.9?[1,0,0]:[0,1,0];
+  const u=normalize(cross(n,h)),v=cross(n,u),S=2.8;
+  const pts=[vec(mul(u,-S),mul(v,-S)),vec(mul(u,S),mul(v,-S)),vec(mul(u,S),mul(v,S)),vec(mul(u,-S),mul(v,S))];
+  trace.push({type:'mesh3d',x:pts.map(p=>p[0]),y:pts.map(p=>p[1]),z:pts.map(p=>p[2]),i:[0,0],j:[1,2],k:[2,3],color:'#16a4a0',opacity:.19,flatshading:true,hoverinfo:'skip',showlegend:false});
+ }
+ return trace;
+}
+const traces=createWorld();
+const elTraces=makeElement(),elementIds=[];
+for(const t of elTraces){elementIds.push(traces.length);traces.push(t);}
+const ghostIds=[];
+for(const [a,b] of DATA.bonds){ghostIds.push(traces.length);traces.push({...mesh(cylinder(original[a],original[b],.074),'#93a4bb',.18),visible:false});}
+for(let a=0;a<DATA.atoms.length;a++){ghostIds.push(traces.length);traces.push({...mesh(sphere(original[a],radii[DATA.atoms[a]]||.28),'#a2b1c0',.18),visible:false});}
+const bondIds=[],atomIds=[];
+let current=frames[100].coords;
+for(const [a,b] of DATA.bonds){bondIds.push(traces.length);traces.push(mesh(cylinder(current[a],current[b],.086),'#a0aec0'));}
+for(let a=0;a<DATA.atoms.length;a++){atomIds.push(traces.length);traces.push(mesh(sphere(current[a],radii[DATA.atoms[a]]||.28),colors[DATA.atoms[a]]||'#8da3ba'));}
+const labelId=traces.length;
+traces.push({type:'scatter3d',x:current.map(p=>p[0]),y:current.map(p=>p[1]),z:current.map(p=>p[2]),mode:'text',text:DATA.labels,textposition:'top center',textfont:{size:12,color:'#233e5b'},showlegend:false,hoverinfo:'skip'});
+const L=DATA.limit;
+function axis(title){return {title:{text:title,font:{size:11,color:'#456782'}},range:[-L,L],showgrid:true,gridcolor:'#a9c4d9',gridwidth:2,showline:true,linecolor:'#849caf',linewidth:1,zeroline:false,showbackground:false,showspikes:false,tickfont:{size:10,color:'#4e708e'},nticks:6};}
+const layout={margin:{l:0,r:0,t:0,b:0},paper_bgcolor:'#ffffff',scene:{xaxis:axis('X (Å)'),yaxis:axis('Y (Å)'),zaxis:axis('Z (Å)'),aspectmode:'cube',bgcolor:'#ffffff',camera,dragmode:'orbit',hovermode:false,uirevision:'symmetry-fixed'},showlegend:false,uirevision:'symmetry-fixed'};
+const config={displayModeBar:false,displaylogo:false,scrollZoom:false,responsive:true,doubleClick:false};
+async function update(p){
+ const frame=frames[p];current=frame.coords;
+ const ids=[],xs=[],ys=[],zs=[];
+ for(let n=0;n<DATA.bonds.length;n++){
+  const [a,b]=DATA.bonds[n],g=cylinder(current[a],current[b],.086);
+  ids.push(bondIds[n]);xs.push(g.x);ys.push(g.y);zs.push(g.z);
+ }
+ for(let a=0;a<DATA.atoms.length;a++){
+  const g=sphere(current[a],radii[DATA.atoms[a]]||.28);
+  ids.push(atomIds[a]);xs.push(g.x);ys.push(g.y);zs.push(g.z);
+ }
+ ids.push(labelId);xs.push(current.map(c=>c[0]));ys.push(current.map(c=>c[1]));zs.push(current.map(c=>c[2]));
+ // 3D-камера не пересоздаётся: меняются только геометрические координаты.
+ await Plotly.restyle(graph,{x:xs,y:ys,z:zs},ids);
+ caption.textContent=frame.caption;
+ document.getElementById('progress-value').textContent=p+'%';
+}
+let pending=null,rendering=false;
+async function drainFrames(){
+ if(rendering)return;
+ rendering=true;
+ try{
+  while(pending!==null){
+   const target=pending;
+   pending=null;
+   await update(target);
+  }
+ } finally{rendering=false;}
+}
+progress.addEventListener('input',()=>{
+ pending=Number(progress.value);
+ requestAnimationFrame(drainFrames);
+});
+element.addEventListener('change',()=>Plotly.restyle(graph,{visible:element.checked},elementIds));
+ghost.addEventListener('change',()=>Plotly.restyle(graph,{visible:ghost.checked},ghostIds));
+function zoom(factor){
+ const c=JSON.parse(JSON.stringify(camera));
+ for(const k of ['x','y','z'])c.eye[k]=Math.max(-12,Math.min(12,c.eye[k]*factor));
+ Plotly.relayout(graph,{'scene.camera':c});
+}
+document.getElementById('zoom-in').onclick=()=>zoom(.78);
+document.getElementById('zoom-out').onclick=()=>zoom(1.28);
+document.getElementById('reset').onclick=()=>Plotly.relayout(graph,{'scene.camera':JSON.parse(JSON.stringify(defaultCamera))});
+document.getElementById('fullscreen').onclick=async()=>{
+ try{if(document.fullscreenElement)await document.exitFullscreen();else await shell.requestFullscreen();}
+ catch(err){alert('Полный экран недоступен в этом браузере. Используйте полноэкранный режим браузера.');}
+};
+function boot(){
+ if(!window.Plotly){document.getElementById('message').style.display='flex';return;}
+ Plotly.newPlot(graph,traces,layout,config).then(()=>{
+  graph.on('plotly_relayout',event=>{
+   if(event['scene.camera'])camera=JSON.parse(JSON.stringify(event['scene.camera']));
+   else if(event['scene.camera.eye'])camera.eye=JSON.parse(JSON.stringify(event['scene.camera.eye']));
+  });
+  if(!showMotion)caption.textContent='Операция не изменяет координат атомов.';
+  else caption.textContent=frames[100].caption;
+ });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+window.addEventListener('resize',()=>{if(window.Plotly)Plotly.Plots.resize(graph);});
+</script></body></html>
