@@ -43,6 +43,26 @@ def operation_catalog(operations):
                       on_click=choose_operation, args=(op.name,))
 
 
+def matrix_number(value: float) -> str:
+    """Readable values without floating-point noise (also used in Excel TSV)."""
+    value = float(value)
+    if abs(value) < 5e-10:
+        return '0'
+    if abs(value - round(value)) < 5e-10:
+        return str(int(round(value)))
+    return f'{value:.6f}'.rstrip('0').rstrip('.')
+
+
+def matrix_as_latex(matrix: np.ndarray) -> str:
+    rows = [' & '.join(matrix_number(v) for v in row) for row in np.asarray(matrix)]
+    return r'\begin{pmatrix}' + r' \\ '.join(rows) + r'\end{pmatrix}'
+
+
+def matrix_as_excel(matrix: np.ndarray) -> str:
+    """Tab-separated columns and newline-separated rows: 3×3 Excel cells."""
+    return '\n'.join('\t'.join(matrix_number(v) for v in row) for row in np.asarray(matrix))
+
+
 def explain_model(molecule, operation):
     info = MOLECULE_CONTEXT[molecule.name]
     explanation = describe(molecule, operation)
@@ -58,7 +78,7 @@ def explain_model(molecule, operation):
         st.markdown('**Химическая интерпретация**')
         st.markdown(group_markup(explanation['chemistry']), unsafe_allow_html=True)
         st.markdown('**Матрица преобразования**')
-        st.code(np.array2string(operation.matrix, precision=3, suppress_small=True), language='text')
+        st.latex(matrix_as_latex(operation.matrix))
 
 
 def lab():
@@ -109,6 +129,10 @@ def lab():
 
     with st.expander('Данные и результаты проверки', expanded=False):
         st.write(MOLECULE_CONTEXT[molecule.name]['model'])
+        st.info('**X, Y, Z** — исходные координаты атомов в ангстремах (Å). '
+                'Координаты со штрихом — координаты тех же атомов **после выбранного преобразования симметрии**. '
+                'Штрих не означает производную. В матричной записи: '
+                r'$\mathbf{r}^{\prime}=M\mathbf{r}$.')
         source = molecule.get_coordinates()
         target = SymmetryOperations.apply(source, operation.matrix)
         rows = []
